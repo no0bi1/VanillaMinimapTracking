@@ -19,6 +19,7 @@
 #include "event/Custom.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -267,6 +268,37 @@ static bool SubnameContainsAnySegment(const std::string &subName, const char *fi
     return false;
 }
 
+// The stock enum proc rejects objects outside the minimap's world radius, but we bypass it for
+// anything we track, and our blips are plain quads drawn over the frame with nothing clipping
+// them to the minimap disc. Zoomed in, the world radius shrinks, so tracked objects that are
+// still "visible" to the object manager land well outside the border. Reject them here instead.
+//
+// We measure the disc in frame space rather than assuming its size: project the player's own
+// position (disc centre) and a point exactly `info->radius` away (disc rim) through the same
+// engine transform the blip positions use. Distance is rotation-invariant, so this holds for
+// any minimap rotation, scale, or layout scale. `scale` is the blip's draw scale; subtracting
+// its half-extent keeps the whole icon inside the rim instead of just its centre.
+static bool IsInsideMinimapDisc(const Game::MINIMAPINFO *info, float unkScale,
+                                Game::C2Vector pos, float scale) {
+    if (!(info->radius > 0.0F))
+        return true; // nothing sensible to compare against; fail open
+    Game::C2Vector center;
+    Game::C2Vector rim;
+    Game::WorldPosToMinimapFrameCoords(&center, nullptr, info->currentPos, info->radius,
+                                       info->currentPos.x, info->currentPos.y, info->layoutScale,
+                                       unkScale);
+    Game::WorldPosToMinimapFrameCoords(&rim, nullptr, info->currentPos, info->radius,
+                                       info->currentPos.x + info->radius, info->currentPos.y,
+                                       info->layoutScale, unkScale);
+    const float discRadius = hypotf(rim.x - center.x, rim.y - center.y);
+    const float limit = discRadius - Game::BLIP_HALF * scale;
+    if (!(limit > 0.0F))
+        return true;
+    const float dx = pos.x - center.x;
+    const float dy = pos.y - center.y;
+    return dx * dx + dy * dy <= limit * limit;
+}
+
 static void TrackObject(Game::MINIMAPINFO *info, Game::CGObject_C *objectptr, uint64_t guid,
                         Blip blip, const char *typeName, std::string subName, int atlasCell = -1) {
     Game::C2Vector minimapPos;
@@ -287,6 +319,11 @@ static void TrackObject(Game::MINIMAPINFO *info, Game::CGObject_C *objectptr, ui
 
     Game::WorldPosToMinimapFrameCoords(&minimapPos, nullptr, info->currentPos, info->radius,
                                        unitPos.x, unitPos.y, info->layoutScale, unkScale);
+
+    // Out past the minimap border (typically when zoomed in) — draw nothing and report nothing
+    // for hover. The caller still treats the object as handled, so no stock blip is drawn either.
+    if (!IsInsideMinimapDisc(info, unkScale, minimapPos, blip.scale))
+        return;
 
     g_trackedObjectsData.push_back(
         {guid, minimapPos, wmoID != info->wmoID, objectptr->vftable->GetName(objectptr),
@@ -777,6 +814,19 @@ static void RegisterDefaultIcons() {
     }
 }
 
+// Self-heal for the case where `Reset()` (CGGameUI_Shutdown) has run but the engine did not go
+// on to re-run `LoadScriptFunctions` — `Reset()` drops the icon registry and uninstalls every
+// hook, and `RegisterLuaFunctions` is the only other place that puts them back. Every Lua entry
+// point that needs them calls this first; it is a handful of bool/empty checks when all is well.
+// Deliberately does nothing while a real logout is in flight (`g_inLogout`).
+static void EnsureRuntimeReady() {
+    if (g_inLogout)
+        return;
+    InstallHooks(); // no-op when already installed
+    if (g_registeredIcons.empty())
+        RegisterDefaultIcons();
+}
+
 // Maps a boolean-flagged type name (Special / RaidMark kinds) to its runtime
 // flag. Returns null for any other type name.
 static bool *SpecialTrackingFlag(const std::string &typeName) {
@@ -1053,6 +1103,7 @@ static int __fastcall Script_MinimapBlip_ListVisibleGUIDs(void *L) {
 // stop carrying its own copy of the icon list and read it back from the
 // engine instead, so the source of truth lives in one place.
 static int __fastcall Script_MinimapBlip_GetIconList(void *L) {
+    EnsureRuntimeReady();
     Game::Lua::SetTop(L, 0);
     Game::Lua::NewTable(L);
     int idx = 1;
@@ -1155,6 +1206,7 @@ static void SyncRuntimeFromIntent() {
 // reads whatever was saved last session. No-op if the file doesn't exist
 // (first run on this character).
 static bool EnsureConfigLoaded() {
+    EnsureRuntimeReady();
     if (g_configLoaded)
         return true;
 

@@ -7,8 +7,21 @@ end
 local ROW_HEIGHT = 18
 local ROW_WIDTH  = 140
 local PADDING    = 6
-local BUTTON_RADIUS = 73
+local BUTTON_EDGE_OFFSET = 3       -- how far past the minimap edge the button's centre sits
 local DEFAULT_ANGLE = math.pi
+local MENU_CLOSE_DELAY = 0.25       -- seconds the cursor may be off both button and menu
+
+-- Cursor-over test used by the menu's auto-close. MouseIsOver is stock in 1.12, but fall back to
+-- a manual rect check in case a client build or addon has removed it.
+local function CursorOver(frame)
+	if MouseIsOver then return MouseIsOver(frame) end
+	local l, b, w, h = frame:GetLeft(), frame:GetBottom(), frame:GetWidth(), frame:GetHeight()
+	if not l or not b then return false end
+	local scale = frame:GetEffectiveScale()
+	local cx, cy = GetCursorPosition()
+	cx, cy = cx / scale, cy / scale
+	return cx >= l and cx <= l + w and cy >= b and cy <= b + h
+end
 
 local NONE_ICON = "Interface\\AddOns\\MinimapBlips\\icons\\None"
 
@@ -39,22 +52,38 @@ function button:ADDON_LOADED()
 	self:SetWidth(32)
 	self:SetHeight(32)
 	self:SetFrameStrata("MEDIUM")
-	self:SetMovable(true)
 	self:RegisterForDrag("LeftButton")
-	self:SetClampedToScreen(true)
 
-	local function RestoreButtonPosition()
-		self:ClearAllPoints()
-		local pos = MinimapBlipsUI.buttonPos
-		if pos then
-			self:SetPoint("CENTER", self:GetParent(), "CENTER", pos.x, pos.y)
-		else
-			self:SetPoint("CENTER", self:GetParent(), "CENTER",
-				BUTTON_RADIUS * math.cos(DEFAULT_ANGLE), BUTTON_RADIUS * math.sin(DEFAULT_ANGLE))
+	-- The button is always anchored to the Minimap itself, on its rim, and only its angle around
+	-- the minimap is saved. Dragging swings it around the edge; it can't be pulled off the map.
+	-- Older versions saved a free x/y offset (buttonPos) - convert that to an angle once.
+	if MinimapBlipsUI.buttonPos and not MinimapBlipsUI.buttonAngle then
+		local old = MinimapBlipsUI.buttonPos
+		if old.x and old.y and (old.x ~= 0 or old.y ~= 0) then
+			MinimapBlipsUI.buttonAngle = math.atan2(old.y, old.x)
 		end
 	end
+	MinimapBlipsUI.buttonPos = nil
 
-	RestoreButtonPosition()
+	local function PlaceButton(angle)
+		local c, s = math.cos(angle), math.sin(angle)
+		local half = Minimap:GetWidth() / 2
+		local x, y
+		if GetMinimapShape and GetMinimapShape() == "SQUARE" then
+			-- Square minimaps (pfUI etc.): slide along the square's edge instead of a circle.
+			local m = math.max(math.abs(c), math.abs(s))
+			x, y = c / m * half, s / m * half
+		else
+			x, y = c * half, s * half
+		end
+		-- Push out so the button straddles the edge the way stock minimap buttons do.
+		x = x + c * BUTTON_EDGE_OFFSET
+		y = y + s * BUTTON_EDGE_OFFSET
+		self:ClearAllPoints()
+		self:SetPoint("CENTER", Minimap, "CENTER", x, y)
+	end
+
+	PlaceButton(MinimapBlipsUI.buttonAngle or DEFAULT_ANGLE)
 
 	local border = self:CreateTexture(nil, "OVERLAY")
 	border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
@@ -86,13 +115,39 @@ function button:ADDON_LOADED()
 	menu:SetBackdropColor(0.09, 0.09, 0.09, 0.9)
 	menu:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
 	menu:Hide()
+
+	-- Close the menu once the cursor has been away from both it and the button for a moment.
+	-- The short delay lets the cursor cross the seam between the button and the menu without
+	-- the menu flickering shut. OnUpdate only runs while the menu is shown.
+	local awayTime = 0
+	menu:SetScript("OnShow", function()
+		awayTime = 0
+	end)
+	menu:SetScript("OnUpdate", function()
+		if CursorOver(menu) or CursorOver(self) then
+			awayTime = 0
+			return
+		end
+		awayTime = awayTime + arg1
+		if awayTime >= MENU_CLOSE_DELAY then
+			menu:Hide()
+		end
+	end)
 	self:RegisterEvent("MINIMAP_UPDATE_TRACKING")
 	self:RegisterEvent("PLAYER_FOCUS_CHANGED")
+	self:RegisterEvent("PLAYER_ENTERING_WORLD")
 	self:SetScript("OnEvent", function()
 		if event == "MINIMAP_UPDATE_TRACKING" then
 			ApplyBlipIcon(icon, NONE_ICON)
 		elseif event == "PLAYER_FOCUS_CHANGED" then
 			self:FOCUS_CHANGED()
+		elseif event == "PLAYER_ENTERING_WORLD" then
+			-- Fires on login, /reload and after every loading screen (zone / continent change,
+			-- flight path hand-offs, etc.). The DLL only applies the saved per-character tracking
+			-- config lazily, on the first C_Minimap call that needs it, so without this nothing
+			-- is tracked until the menu happens to be opened. Calling it here applies the config
+			-- and re-arms the DLL's hooks/icons if a UI teardown left them down. Idempotent.
+			C_Minimap.GetTracked()
 		end
 	end)
 
@@ -194,15 +249,13 @@ function button:ADDON_LOADED()
 	end)
 
 	local function FollowCursor()
-		local parent = this:GetParent()
-		local mx, my = parent:GetCenter()
+		local mx, my = Minimap:GetCenter()
 		if not mx then return end
-		local scale = parent:GetEffectiveScale()
+		local scale = Minimap:GetEffectiveScale()
 		local cx, cy = GetCursorPosition()
-		local x, y = cx / scale - mx, cy / scale - my
-		this:ClearAllPoints()
-		this:SetPoint("CENTER", parent, "CENTER", x, y)
-		MinimapBlipsUI.buttonPos = { x = x, y = y }
+		local angle = math.atan2(cy / scale - my, cx / scale - mx)
+		MinimapBlipsUI.buttonAngle = angle
+		PlaceButton(angle)
 	end
 
 	self:SetScript("OnDragStart", function()
@@ -218,7 +271,7 @@ function button:ADDON_LOADED()
 	self:SetScript("OnEnter", function()
 		GameTooltip:SetOwner(this, "ANCHOR_LEFT")
 		GameTooltip:SetText("Minimap Blips")
-		GameTooltip:AddLine("Shift-drag to move.", 0.7, 0.7, 0.7)
+		GameTooltip:AddLine("Shift-drag to move around the minimap.", 0.7, 0.7, 0.7)
 		GameTooltip:Show()
 	end)
 
@@ -243,3 +296,17 @@ button:SetScript("OnEvent", function()
 		this:ADDON_LOADED()
 	end
 end)
+
+-- /mmb status: quick check for "my blips vanished" reports. If the tracked list is non-empty but
+-- the visible count is 0 away from any matching NPC, the DLL's draw/enum path is the problem; if
+-- the tracked list is empty, the per-character tracking state was lost.
+SLASH_MINIMAPBLIPS1 = "/mmb"
+SlashCmdList["MINIMAPBLIPS"] = function()
+	local names = ""
+	for k in pairs(C_Minimap.GetTracked()) do
+		names = names .. (names == "" and "" or ", ") .. k
+	end
+	if names == "" then names = "(none)" end
+	local visible = table.getn(C_Minimap.ListVisibleGUIDs())
+	DEFAULT_CHAT_FRAME:AddMessage("|cff00ccffMinimapBlips:|r tracking " .. names .. "; blips on minimap: " .. visible)
+end
