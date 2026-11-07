@@ -161,8 +161,14 @@ function button:ADDON_LOADED()
 		questieRow:SetPoint("TOPLEFT", menu, "TOPLEFT", PADDING, -(PADDING + (NUM_BLIPS + 1) * ROW_HEIGHT))
 		questieRow:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
 
+		local questieIcon = questieRow:CreateTexture(nil, "ARTWORK")
+		questieIcon:SetTexture("Interface\\GossipFrame\\AvailableQuestIcon")
+		questieIcon:SetWidth(14)
+		questieIcon:SetHeight(14)
+		questieIcon:SetPoint("LEFT", questieRow, "LEFT", 18, 0)
+
 		local questieLabel = questieRow:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-		questieLabel:SetPoint("CENTER", questieRow, "CENTER", 0, 0)
+		questieLabel:SetPoint("LEFT", questieRow, "LEFT", 36, 0)
 		questieLabel:SetText("Questie Options")
 
 		questieRow:SetScript("OnClick", function()
