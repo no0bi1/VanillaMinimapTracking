@@ -296,17 +296,3 @@ button:SetScript("OnEvent", function()
 		this:ADDON_LOADED()
 	end
 end)
-
--- /mmb status: quick check for "my blips vanished" reports. If the tracked list is non-empty but
--- the visible count is 0 away from any matching NPC, the DLL's draw/enum path is the problem; if
--- the tracked list is empty, the per-character tracking state was lost.
-SLASH_MINIMAPBLIPS1 = "/mmb"
-SlashCmdList["MINIMAPBLIPS"] = function()
-	local names = ""
-	for k in pairs(C_Minimap.GetTracked()) do
-		names = names .. (names == "" and "" or ", ") .. k
-	end
-	if names == "" then names = "(none)" end
-	local visible = table.getn(C_Minimap.ListVisibleGUIDs())
-	DEFAULT_CHAT_FRAME:AddMessage("|cff00ccffMinimapBlips:|r tracking " .. names .. "; blips on minimap: " .. visible)
-end
