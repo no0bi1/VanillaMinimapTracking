@@ -31,19 +31,6 @@ end
 local ICONS = C_Minimap.GetIconList()
 local NUM_BLIPS = table.getn(ICONS)
 
--- Returns the icon path + type of the highest-priority tracked category, or
--- the "none" icon (and nil type) when nothing is tracked.
-local function GetBestTracking()
-	local tracked = C_Minimap.GetTracked()
-	for i = NUM_BLIPS, 1, -1 do
-		local entry = ICONS[i]
-		if tracked[entry.type] then
-			return entry.icon, entry.type
-		end
-	end
-	return NONE_ICON, nil
-end
-
 local button = CreateFrame("Button", "MinimapIconBlips", Minimap)
 
 function button:ADDON_LOADED()
@@ -79,7 +66,7 @@ function button:ADDON_LOADED()
 	icon:SetWidth(20)
 	icon:SetHeight(20)
 	icon:SetPoint("CENTER", self, "CENTER", 0, 0)
-	ApplyBlipIcon(icon, GetBestTracking())
+	ApplyBlipIcon(icon, NONE_ICON)
 
 	self:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 
@@ -103,7 +90,7 @@ function button:ADDON_LOADED()
 	self:RegisterEvent("PLAYER_FOCUS_CHANGED")
 	self:SetScript("OnEvent", function()
 		if event == "MINIMAP_UPDATE_TRACKING" then
-			ApplyBlipIcon(icon, GetBestTracking())
+			ApplyBlipIcon(icon, NONE_ICON)
 		elseif event == "PLAYER_FOCUS_CHANGED" then
 			self:FOCUS_CHANGED()
 		end
