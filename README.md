@@ -27,7 +27,7 @@ a small button next to the minimap.
   version wins.
 
 The tracking button sits on the minimap's rim; Shift-drag swings it around the edge. The menu closes
-when the cursor leaves it. `/mmb` prints what's tracked and how many blips are on the minimap.
+when the cursor leaves it.
 
 ## Categories
 
