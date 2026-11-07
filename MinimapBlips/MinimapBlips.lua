@@ -66,21 +66,23 @@ function button:ADDON_LOADED()
 	MinimapBlipsUI.buttonPos = nil
 
 	local function PlaceButton(angle)
+		-- Match ItemRack's minimap-button placement: calculate an offset from the
+		-- minimap's top-left corner, rather than anchoring the button by its center.
+		-- The legacy minimap is approximately 140x140, so the circular radius is 80.
 		local c, s = math.cos(angle), math.sin(angle)
-		local half = Minimap:GetWidth() / 2
 		local x, y
 		if GetMinimapShape and GetMinimapShape() == "SQUARE" then
-			-- Square minimaps (pfUI etc.): slide along the square's edge instead of a circle.
-			local m = math.max(math.abs(c), math.abs(s))
-			x, y = c / m * half, s / m * half
+			-- ItemRack-style square edge placement: project beyond the corners, then
+			-- clamp each axis to the minimap rim.
+			x = math.max(-82, math.min(110 * c, 84))
+			y = math.max(-86, math.min(110 * s, 82))
 		else
-			x, y = c * half, s * half
+			x = 80 * c
+			y = 80 * s
 		end
-		-- Push out so the button straddles the edge the way stock minimap buttons do.
-		x = x + c * BUTTON_EDGE_OFFSET
-		y = y + s * BUTTON_EDGE_OFFSET
+
 		self:ClearAllPoints()
-		self:SetPoint("CENTER", Minimap, "CENTER", x, y)
+		self:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 52 - x, y - 52)
 	end
 
 	PlaceButton(MinimapBlipsUI.buttonAngle or DEFAULT_ANGLE)
