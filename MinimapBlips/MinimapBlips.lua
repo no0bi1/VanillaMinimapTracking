@@ -73,8 +73,8 @@ function button:ADDON_LOADED()
 	local menu = CreateFrame("Frame", nil, UIParent)
 	menu:SetFrameStrata("FULLSCREEN_DIALOG")
 	menu:SetWidth(ROW_WIDTH + PADDING * 2)
-	-- +1 row for the "Clear All" entry pinned at the top.
-	menu:SetHeight((NUM_BLIPS + 1) * ROW_HEIGHT + PADDING * 2)
+	-- Rows: "Clear All", each blip type, and the optional Questie shortcut.
+	menu:SetHeight((NUM_BLIPS + 2) * ROW_HEIGHT + PADDING * 2)
 	menu:SetBackdrop({
 		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -154,6 +154,25 @@ function button:ADDON_LOADED()
 			end)
 			row:RegisterEvent("MINIMAP_UPDATE_TRACKING")
 		end
+
+		local questieRow = CreateFrame("Button", nil, menu)
+		questieRow:SetWidth(ROW_WIDTH)
+		questieRow:SetHeight(ROW_HEIGHT)
+		questieRow:SetPoint("TOPLEFT", menu, "TOPLEFT", PADDING, -(PADDING + (NUM_BLIPS + 1) * ROW_HEIGHT))
+		questieRow:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+
+		local questieLabel = questieRow:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		questieLabel:SetPoint("CENTER", questieRow, "CENTER", 0, 0)
+		questieLabel:SetText("Questie Options")
+
+		questieRow:SetScript("OnClick", function()
+			menu:Hide()
+			if IsAddOnLoaded("!Questie") and Questie and Questie.OptionsForm_Display then
+				Questie:OptionsForm_Display()
+			else
+				DEFAULT_CHAT_FRAME:AddMessage("|cffff4444MinimapBlips:|r Questie is not loaded.")
+			end
+		end)
 	end
 
 	self:SetScript("OnClick", function()
