@@ -7,8 +7,21 @@ end
 local ROW_HEIGHT = 18
 local ROW_WIDTH  = 140
 local PADDING    = 6
-local BUTTON_RADIUS = 73
+local BUTTON_EDGE_OFFSET = 3       -- how far past the minimap edge the button's centre sits
 local DEFAULT_ANGLE = math.pi
+local MENU_CLOSE_DELAY = 0.25       -- seconds the cursor may be off both button and menu
+
+-- Cursor-over test used by the menu's auto-close. MouseIsOver is stock in 1.12, but fall back to
+-- a manual rect check in case a client build or addon has removed it.
+local function CursorOver(frame)
+	if MouseIsOver then return MouseIsOver(frame) end
+	local l, b, w, h = frame:GetLeft(), frame:GetBottom(), frame:GetWidth(), frame:GetHeight()
+	if not l or not b then return false end
+	local scale = frame:GetEffectiveScale()
+	local cx, cy = GetCursorPosition()
+	cx, cy = cx / scale, cy / scale
+	return cx >= l and cx <= l + w and cy >= b and cy <= b + h
+end
 
 local NONE_ICON = "Interface\\AddOns\\MinimapBlips\\icons\\None"
 
@@ -31,19 +44,6 @@ end
 local ICONS = C_Minimap.GetIconList()
 local NUM_BLIPS = table.getn(ICONS)
 
--- Returns the icon path + type of the highest-priority tracked category, or
--- the "none" icon (and nil type) when nothing is tracked.
-local function GetBestTracking()
-	local tracked = C_Minimap.GetTracked()
-	for i = NUM_BLIPS, 1, -1 do
-		local entry = ICONS[i]
-		if tracked[entry.type] then
-			return entry.icon, entry.type
-		end
-	end
-	return NONE_ICON, nil
-end
-
 local button = CreateFrame("Button", "MinimapIconBlips", Minimap)
 
 function button:ADDON_LOADED()
@@ -52,22 +52,40 @@ function button:ADDON_LOADED()
 	self:SetWidth(32)
 	self:SetHeight(32)
 	self:SetFrameStrata("MEDIUM")
-	self:SetMovable(true)
 	self:RegisterForDrag("LeftButton")
-	self:SetClampedToScreen(true)
 
-	local function RestoreButtonPosition()
-		self:ClearAllPoints()
-		local pos = MinimapBlipsUI.buttonPos
-		if pos then
-			self:SetPoint("CENTER", self:GetParent(), "CENTER", pos.x, pos.y)
-		else
-			self:SetPoint("CENTER", self:GetParent(), "CENTER",
-				BUTTON_RADIUS * math.cos(DEFAULT_ANGLE), BUTTON_RADIUS * math.sin(DEFAULT_ANGLE))
+	-- The button is always anchored to the Minimap itself, on its rim, and only its angle around
+	-- the minimap is saved. Dragging swings it around the edge; it can't be pulled off the map.
+	-- Older versions saved a free x/y offset (buttonPos) - convert that to an angle once.
+	if MinimapBlipsUI.buttonPos and not MinimapBlipsUI.buttonAngle then
+		local old = MinimapBlipsUI.buttonPos
+		if old.x and old.y and (old.x ~= 0 or old.y ~= 0) then
+			MinimapBlipsUI.buttonAngle = math.atan2(old.y, old.x)
 		end
 	end
+	MinimapBlipsUI.buttonPos = nil
 
-	RestoreButtonPosition()
+	local function PlaceButton(angle)
+		-- Match ItemRack's minimap-button placement: calculate an offset from the
+		-- minimap's top-left corner, rather than anchoring the button by its center.
+		-- The legacy minimap is approximately 140x140, so the circular radius is 80.
+		local c, s = math.cos(angle), math.sin(angle)
+		local x, y
+		if GetMinimapShape and GetMinimapShape() == "SQUARE" then
+			-- ItemRack-style square edge placement: project beyond the corners, then
+			-- clamp each axis to the minimap rim.
+			x = math.max(-82, math.min(110 * c, 84))
+			y = math.max(-86, math.min(110 * s, 82))
+		else
+			x = 80 * c
+			y = 80 * s
+		end
+
+		self:ClearAllPoints()
+		self:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 52 - x, y - 52)
+	end
+
+	PlaceButton(MinimapBlipsUI.buttonAngle or DEFAULT_ANGLE)
 
 	local border = self:CreateTexture(nil, "OVERLAY")
 	border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
@@ -79,15 +97,15 @@ function button:ADDON_LOADED()
 	icon:SetWidth(20)
 	icon:SetHeight(20)
 	icon:SetPoint("CENTER", self, "CENTER", 0, 0)
-	ApplyBlipIcon(icon, GetBestTracking())
+	ApplyBlipIcon(icon, NONE_ICON)
 
 	self:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 
 	local menu = CreateFrame("Frame", nil, UIParent)
 	menu:SetFrameStrata("FULLSCREEN_DIALOG")
 	menu:SetWidth(ROW_WIDTH + PADDING * 2)
-	-- +1 row for the "Clear All" entry pinned at the top.
-	menu:SetHeight((NUM_BLIPS + 1) * ROW_HEIGHT + PADDING * 2)
+	-- Rows: "Clear All", each blip type, and the optional Questie shortcut.
+	menu:SetHeight((NUM_BLIPS + 2) * ROW_HEIGHT + PADDING * 2)
 	menu:SetBackdrop({
 		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -99,13 +117,39 @@ function button:ADDON_LOADED()
 	menu:SetBackdropColor(0.09, 0.09, 0.09, 0.9)
 	menu:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
 	menu:Hide()
+
+	-- Close the menu once the cursor has been away from both it and the button for a moment.
+	-- The short delay lets the cursor cross the seam between the button and the menu without
+	-- the menu flickering shut. OnUpdate only runs while the menu is shown.
+	local awayTime = 0
+	menu:SetScript("OnShow", function()
+		awayTime = 0
+	end)
+	menu:SetScript("OnUpdate", function()
+		if CursorOver(menu) or CursorOver(self) then
+			awayTime = 0
+			return
+		end
+		awayTime = awayTime + arg1
+		if awayTime >= MENU_CLOSE_DELAY then
+			menu:Hide()
+		end
+	end)
 	self:RegisterEvent("MINIMAP_UPDATE_TRACKING")
 	self:RegisterEvent("PLAYER_FOCUS_CHANGED")
+	self:RegisterEvent("PLAYER_ENTERING_WORLD")
 	self:SetScript("OnEvent", function()
 		if event == "MINIMAP_UPDATE_TRACKING" then
-			ApplyBlipIcon(icon, GetBestTracking())
+			ApplyBlipIcon(icon, NONE_ICON)
 		elseif event == "PLAYER_FOCUS_CHANGED" then
 			self:FOCUS_CHANGED()
+		elseif event == "PLAYER_ENTERING_WORLD" then
+			-- Fires on login, /reload and after every loading screen (zone / continent change,
+			-- flight path hand-offs, etc.). The DLL only applies the saved per-character tracking
+			-- config lazily, on the first C_Minimap call that needs it, so without this nothing
+			-- is tracked until the menu happens to be opened. Calling it here applies the config
+			-- and re-arms the DLL's hooks/icons if a UI teardown left them down. Idempotent.
+			C_Minimap.GetTracked()
 		end
 	end)
 
@@ -167,10 +211,38 @@ function button:ADDON_LOADED()
 			end)
 			row:RegisterEvent("MINIMAP_UPDATE_TRACKING")
 		end
+
+		local questieRow = CreateFrame("Button", nil, menu)
+		questieRow:SetWidth(ROW_WIDTH)
+		questieRow:SetHeight(ROW_HEIGHT)
+		questieRow:SetPoint("TOPLEFT", menu, "TOPLEFT", PADDING, -(PADDING + (NUM_BLIPS + 1) * ROW_HEIGHT))
+		questieRow:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+
+		local questieIcon = questieRow:CreateTexture(nil, "ARTWORK")
+		questieIcon:SetTexture("Interface\\GossipFrame\\AvailableQuestIcon")
+		questieIcon:SetWidth(14)
+		questieIcon:SetHeight(14)
+		questieIcon:SetPoint("LEFT", questieRow, "LEFT", 18, 0)
+
+		local questieLabel = questieRow:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		questieLabel:SetPoint("LEFT", questieRow, "LEFT", 36, 0)
+		questieLabel:SetText("Questie Options")
+
+		questieRow:SetScript("OnClick", function()
+			menu:Hide()
+			if IsAddOnLoaded("!Questie") and Questie and Questie.OptionsForm_Display then
+				Questie:OptionsForm_Display()
+			else
+				DEFAULT_CHAT_FRAME:AddMessage("|cffff4444MinimapBlips:|r Questie is not loaded.")
+			end
+		end)
 	end
 
 	self:SetScript("OnClick", function()
-		if IsShiftKeyDown() then return end
+		if IsShiftKeyDown() or self.justDragged then
+			self.justDragged = nil
+			return
+		end
 		if menu:IsShown() then
 			menu:Hide()
 			return
@@ -182,31 +254,34 @@ function button:ADDON_LOADED()
 	end)
 
 	local function FollowCursor()
-		local parent = this:GetParent()
-		local mx, my = parent:GetCenter()
+		local mx, my = Minimap:GetCenter()
 		if not mx then return end
-		local scale = parent:GetEffectiveScale()
+		local scale = Minimap:GetEffectiveScale()
 		local cx, cy = GetCursorPosition()
-		local x, y = cx / scale - mx, cy / scale - my
-		this:ClearAllPoints()
-		this:SetPoint("CENTER", parent, "CENTER", x, y)
-		MinimapBlipsUI.buttonPos = { x = x, y = y }
+		-- PlaceButton uses the ItemRack convention (x mirrored), so measure the angle the same way
+		-- or the button swings the opposite way horizontally.
+		local angle = math.atan2(cy / scale - my, mx - cx / scale)
+		MinimapBlipsUI.buttonAngle = angle
+		PlaceButton(angle)
 	end
 
 	self:SetScript("OnDragStart", function()
 		if not IsShiftKeyDown() then return end
 		GameTooltip:Hide()
+		menu:Hide()
+		this.justDragged = true
 		this:SetScript("OnUpdate", FollowCursor)
 	end)
 
 	self:SetScript("OnDragStop", function()
 		this:SetScript("OnUpdate", nil)
+		FollowCursor()
 	end)
 
 	self:SetScript("OnEnter", function()
 		GameTooltip:SetOwner(this, "ANCHOR_LEFT")
 		GameTooltip:SetText("Minimap Blips")
-		GameTooltip:AddLine("Shift-drag to move.", 0.7, 0.7, 0.7)
+		GameTooltip:AddLine("Shift-drag to move around the minimap.", 0.7, 0.7, 0.7)
 		GameTooltip:Show()
 	end)
 
